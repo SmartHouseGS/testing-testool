@@ -1,0 +1,118 @@
+name: GitHub Actions
+
+env:
+  AZURE_WEBAPP_NAME: gridcalc-test                  # set this to the name of your Azure Web App
+  AZURE_WEBAPP_PACKAGE_PATH: '.'                    # set this to the path to your web app project, defaults to the repository root
+  DOTNET_VERSION: '6.0.x'                           # set this to the .NET Core version to use
+  NODE_VERSION: '14.x'                              # set this to the node version to use
+  TEST_EMAIL: '${{ secrets.TEST_EMAIL }}'
+  TEST_PASS: '${{ secrets.TEST_PASS }}'
+
+run-name: ${{ github.actor }} is testing out GitHub Actions 🚀
+on:
+  push:
+    branches:
+      - "main"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  Build:
+  
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Add GitHub Actions worker to Azure Key Vault allowed IP addresses
+      uses: azure/CLI@v1
+      with:
+          inlineScript: |
+            ip=$(curl -s https://api.ipify.org)/32
+            echo "ip=$ip" >> $GITHUB_ENV
+            az keyvault network-rule add --name gridcalculatortestkv --ip-address $ip
+            WEB_APPS=('gridcalculator-test-calculation-engine' 'gridcalculator-test-calculation-service' 'gridcalculator-test-calculator-api' 'gridcalculator-test-network-service' 'gridcalculator-test-calculator-web')
+            for appname in "${WEB_APPS[@]}"
+            do
+              echo "Adding ip $ip to web app $appname"
+              az webapp config access-restriction add -g grid-calculator-test -n $appname --rule-name 'AllowGitHubCalculationService' --priority 10000 --action Allow --ip-address $ip
+              echo "Done adding ip $ip to web app $appname"
+            done
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v2
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+   
+        
+    - name: Build with dotnet
+      run: dotnet build
+      
+    - name: BuildDotnetApp
+      run: SpecFlowPlaywright-POC/bin/Debug/net6.0/playwright.ps1 install
+      shell: pwsh
+  
+  
+    - name: RunSpecFlowTests
+      run: |
+        _args=()
+        _logger_args=()        
+        if ! dotnet test --no-build "${_args[@]}"; then
+            echo "_EXIT=1" >> $GITHUB_ENV
+        fi
+      shell: bash
+      continue-on-error: true
+
+
+   # - uses: cryptic-wizard/run-specflow-tests@v1.3.1
+   #   with:
+    #    test-assembly-path: SpecFlowPlaywright-POC/bin/Debug/net6.0
+     #   test-assembly-dll: SpecFlowPlaywrightPOC.dll
+      #  output-html: CalculatorResults.html
+       # framework: net6.0
+    
+    - name: Remove GitHub Actions worker from Azure Key Vault allowed IP addresses
+      if: always()
+      uses: azure/CLI@v1
+      with:
+        inlineScript: |
+            echo $ip
+            az keyvault network-rule remove --name gridcalculatortestkv --ip-address $ip
+            WEB_APPS=('gridcalculator-test-calculation-engine' 'gridcalculator-test-calculation-service' 'gridcalculator-test-calculator-api' 'gridcalculator-test-network-service' 'gridcalculator-test-calculator-web')
+            for appname in "${WEB_APPS[@]}"
+            do
+              echo "Removing ip $ip from web app $appname"
+              az webapp config access-restriction remove -g grid-calculator-test -n $appname --rule-name 'AllowGitHubCalculationService'
+              echo "Done removing ip $ip from web app $appname"
+            done
+    - name: Az logout
+      if: always()
+      uses: azure/CLI@v1
+      with:
+        inlineScript: |
+            az logout
+            az cache purge
+            az account clear
+    - name: ReturnCode
+      run: |
+          cd /home/runner/work/pg-anb-grid-calculator-qa-tests/pg-anb-grid-calculator-qa-tests/SpecFlowPlaywright-POC/bin/Debug/net6.0/
+          ls
+      shell: bash
+
+    - name: 'Publish Specflow Test Results'
+      uses: actions/upload-artifact@v2
+      with:
+          name: 'Specflow Test Results'
+          path: '/home/runner/work/pg-anb-grid-calculator-qa-tests/pg-anb-grid-calculator-qa-tests/SpecFlowPlaywright-POC/bin/Debug/net6.0/test.jpg'
+    - name: ReturnCode
+      run: |
+          echo "${_EXIT:-0}"
+      shell: bash
